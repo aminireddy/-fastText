@@ -1,0 +1,697 @@
+{
+ "cells": [
+  {
+   "cell_type": "code",
+   "execution_count": 65,
+   "metadata": {},
+   "outputs": [],
+   "source": [
+    "from sklearn.cluster import KMeans\n",
+    "import numpy as np\n",
+    "import csv\n",
+    "import math\n",
+    "import matplotlib.pyplot\n",
+    "from matplotlib import pyplot as plt"
+   ]
+  },
+  {
+   "cell_type": "code",
+   "execution_count": 66,
+   "metadata": {},
+   "outputs": [],
+   "source": [
+    "maxAcc = 0.0\n",
+    "maxIter = 0\n",
+    "C_Lambda = 0.03 #term used for regularization in order to prevent overfitting\n",
+    "TrainingPercent = 80 #Percentage of data considered for training the model\n",
+    "ValidationPercent = 10 #Percentage of data considered for validation\n",
+    "TestPercent = 10 #Percentage of data considered for testing\n",
+    "M = [1,10,50,100,2] # number of radial basis functions.\n",
+    "PHI = [] # this is the design matrix\n",
+    "IsSynthetic = False"
+   ]
+  },
+  {
+   "cell_type": "code",
+   "execution_count": 67,
+   "metadata": {},
+   "outputs": [],
+   "source": [
+    "# This is used to generate raw data(datamatrix)\n",
+    "# generate datasets\n",
+    "def GetTargetVector(filePath):\n",
+    "    t = []\n",
+    "    with open(filePath, 'rU') as f:\n",
+    "        reader = csv.reader(f)\n",
+    "        for row in reader:  \n",
+    "            t.append(int(row[0]))\n",
+    "    #print(\"Raw Training Generated..\")\n",
+    "    return t\n",
+    "\n",
+    "# this method is used to generate data from querylevelnorm.csv\n",
+    "# data matrix will be of the dimensions 41 * 69623\n",
+    "# 41 is the number of features\n",
+    "# 69623 is the total number of rows in the dataset\n",
+    "def GenerateRawData(filePath, IsSynthetic):    \n",
+    "    dataMatrix = [] \n",
+    "    with open(filePath, 'rU') as fi:\n",
+    "        reader = csv.reader(fi)\n",
+    "        for row in reader:\n",
+    "            dataRow = []\n",
+    "            for column in row:\n",
+    "                dataRow.append(float(column))\n",
+    "            dataMatrix.append(dataRow)   \n",
+    "    \n",
+    "    if IsSynthetic == False :\n",
+    "        dataMatrix = np.delete(dataMatrix, [5,6,7,8,9], axis=1)# we are deleting this 5 features because the values are 0\n",
+    "    dataMatrix = np.transpose(dataMatrix)     \n",
+    "    print (\"Data Matrix Generated..\")\n",
+    "    print(dataMatrix.shape)\n",
+    "    return dataMatrix\n",
+    "# This is taking 80% of the target values from the entire target \n",
+    "def GenerateTrainingTarget (rawTraining,TrainingPercent = 80):\n",
+    "    TrainingLen = int(math.ceil(len(rawTraining)*(TrainingPercent*0.01)))\n",
+    "    t           = rawTraining[:TrainingLen]\n",
+    "    #print(str(TrainingPercent) + \"% Training Target Generated..\")\n",
+    "    return t  \n",
+    "# This method is used to specify and seperate 80% of the data is for training data\n",
+    "def GenerateTrainingDataMatrix(rawData, TrainingPercent = 80):\n",
+    "    T_len = int(math.ceil(len(rawData[0])*0.01*TrainingPercent))\n",
+    "    d2 = rawData[:,0:T_len]\n",
+    "    #print(str(TrainingPercent) + \"% Training Data Generated..\")\n",
+    "    return d2\n",
+    "# This method is used to specify and seperate 10% of the data is for validation data.\n",
+    "# The same method is called for testing data as well because it is the same 10% again.\n",
+    "def GenerateValData(rawData, ValPercent, TrainingCount): \n",
+    "    valSize = int(math.ceil(len(rawData[0])*ValPercent*0.01))\n",
+    "    V_End = TrainingCount + valSize\n",
+    "    dataMatrix = rawData[:,TrainingCount+1:V_End]\n",
+    "    #print (str(ValPercent) + \"% Val Data Generated..\")  \n",
+    "    return dataMatrix\n",
+    "# This method is for the file QueryLevelNormt.csv\n",
+    "# prepares the target values for validation dataset\n",
+    "def GenerateValTargetVector(rawData, ValPercent, TrainingCount): \n",
+    "    valSize = int(math.ceil(len(rawData)*ValPercent*0.01))\n",
+    "    V_End = TrainingCount + valSize\n",
+    "    t =rawData[TrainingCount+1:V_End]\n",
+    "    #print (str(ValPercent) + \"% Val Target Data Generated..\")\n",
+    "    return t\n",
+    "\n",
+    "# this function is used to generate the bigsigma matrix which is used in the normal distribution formula.\n",
+    "# Big sigma is the variance matrix. \n",
+    "# We assume all varainces are equal for a particular feature.\n",
+    "# Hence the variance matrix will be of the shape 41 * 41.\n",
+    "# it is not 46 * 46 because 5 features are being deleted.\n",
+    "# we ll have elements only in the diagnol of the matrix.\n",
+    "def GenerateBigSigma(Data, MuMatrix,TrainingPercent,IsSynthetic):\n",
+    "    BigSigma    = np.zeros((len(Data),len(Data)))\n",
+    "    DataT       = np.transpose(Data)\n",
+    "    TrainingLen = math.ceil(len(DataT)*(TrainingPercent*0.01))        \n",
+    "    varVect     = []\n",
+    "    for i in range(0,len(DataT[0])):\n",
+    "        vct = []\n",
+    "        for j in range(0,int(TrainingLen)):\n",
+    "            vct.append(Data[i][j])    \n",
+    "        varVect.append(np.var(vct))\n",
+    "    \n",
+    "    for j in range(len(Data)):\n",
+    "        BigSigma[j][j] = varVect[j]\n",
+    "    if IsSynthetic == True:\n",
+    "        BigSigma = np.dot(3,BigSigma)\n",
+    "    else:\n",
+    "        BigSigma = np.dot(200,BigSigma)\n",
+    "    ##print (\"BigSigma Generated..\")\n",
+    "    return BigSigma\n",
+    "# The gaussian distribution function is 0.5(X-Mu)* BigSigInv* (x-Mu)transpose.\n",
+    "def GetScalar(DataRow,MuRow, BigSigInv):  \n",
+    "    R = np.subtract(DataRow,MuRow) # This subtracts X- Mu and stores in R\n",
+    "    T = np.dot(BigSigInv,np.transpose(R))  # Multiplies R transpose and BigSigInv and stores in T\n",
+    "    L = np.dot(R,T) # Multiplies T and R and returns L\n",
+    "    return L\n",
+    "# This functions is the gaussian distribution formula.\n",
+    "# This is used to return each PHI and not the PHI matrix.\n",
+    "def GetRadialBasisOut(DataRow,MuRow, BigSigInv):    \n",
+    "    phi_x = math.exp(-0.5*GetScalar(DataRow,MuRow,BigSigInv))\n",
+    "    return phi_x\n",
+    "# This method is used to get the Phi matrix which is the design matrix.\n",
+    "# Phi matrix is the result of the radial basis function.\n",
+    "# We are using 10 radial basis function and hence dimension of phi matrix will be 10 * number of data\n",
+    "def GetPhiMatrix(Data, MuMatrix, BigSigma, TrainingPercent = 80):\n",
+    "    DataT = np.transpose(Data)\n",
+    "    TrainingLen = math.ceil(len(DataT)*(TrainingPercent*0.01 ))         \n",
+    "    PHI = np.zeros((int(TrainingLen),len(MuMatrix))) \n",
+    "    BigSigInv = np.linalg.inv(BigSigma) # We calculated BigSigma only. But we needed Inverse of Big Sigma acc. to the formula\n",
+    "    for  C in range(0,len(MuMatrix)):\n",
+    "        for R in range(0,int(TrainingLen)):\n",
+    "            PHI[R][C] = GetRadialBasisOut(DataT[R], MuMatrix[C], BigSigInv)#Every PHI calculated is stored in a Matrix called PHI\n",
+    "    #print (\"PHI Generated..\")\n",
+    "    return PHI\n",
+    "\n",
+    "# Lamba is a regularization term used to prevent overfitting\n",
+    "# This method is used to get the closed form W* \n",
+    "def GetWeightsClosedForm(PHI, T, Lambda):\n",
+    "    Lambda_I = np.identity(len(PHI[0]))\n",
+    "    for i in range(0,len(PHI[0])):\n",
+    "        Lambda_I[i][i] = Lambda\n",
+    "    PHI_T       = np.transpose(PHI)\n",
+    "    PHI_SQR     = np.dot(PHI_T,PHI)\n",
+    "    PHI_SQR_LI  = np.add(Lambda_I,PHI_SQR)\n",
+    "    PHI_SQR_INV = np.linalg.inv(PHI_SQR_LI)\n",
+    "    INTER       = np.dot(PHI_SQR_INV, PHI_T)\n",
+    "    W           = np.dot(INTER, T)\n",
+    "    ##print (\"Training Weights Generated..\")\n",
+    "    return W\n",
+    "\n",
+    "# This is for the regression formula y = phi *w transpose\n",
+    "# returns our predicted value\n",
+    "def GetValTest(VAL_PHI,W):\n",
+    "    Y = np.dot(W,np.transpose(VAL_PHI))\n",
+    "    ##print (\"Test Out Generated..\")\n",
+    "    return Y\n",
+    "# This is used to find our accuracy and Erms based on target and the predicted value.\n",
+    "def GetErms(VAL_TEST_OUT,ValDataAct):\n",
+    "    sum = 0.0\n",
+    "    t=0\n",
+    "    accuracy = 0.0\n",
+    "    counter = 0\n",
+    "    val = 0.0\n",
+    "    for i in range (0,len(VAL_TEST_OUT)):\n",
+    "        sum = sum + math.pow((ValDataAct[i] - VAL_TEST_OUT[i]),2)\n",
+    "        if(int(np.around(VAL_TEST_OUT[i], 0)) == ValDataAct[i]):\n",
+    "            counter+=1\n",
+    "    accuracy = (float((counter*100))/float(len(VAL_TEST_OUT)))\n",
+    "    ##print (\"Accuracy Generated..\")\n",
+    "    ##print (\"Validation E_RMS : \" + str(math.sqrt(sum/len(VAL_TEST_OUT))))\n",
+    "    return (str(accuracy) + ',' +  str(math.sqrt(sum/len(VAL_TEST_OUT))))"
+   ]
+  },
+  {
+   "cell_type": "markdown",
+   "metadata": {},
+   "source": [
+    "## Fetch and Prepare Dataset"
+   ]
+  },
+  {
+   "cell_type": "code",
+   "execution_count": 68,
+   "metadata": {},
+   "outputs": [
+    {
+     "name": "stderr",
+     "output_type": "stream",
+     "text": [
+      "C:\\Users\\tceve\\Anaconda3\\lib\\site-packages\\ipykernel_launcher.py:5: DeprecationWarning: 'U' mode is deprecated\n",
+      "  \"\"\"\n",
+      "C:\\Users\\tceve\\Anaconda3\\lib\\site-packages\\ipykernel_launcher.py:18: DeprecationWarning: 'U' mode is deprecated\n"
+     ]
+    },
+    {
+     "name": "stdout",
+     "output_type": "stream",
+     "text": [
+      "Data Matrix Generated..\n",
+      "(41, 69623)\n"
+     ]
+    }
+   ],
+   "source": [
+    "RawTarget = GetTargetVector('Querylevelnorm_t.csv')\n",
+    "RawData   = GenerateRawData('Querylevelnorm_X.csv',IsSynthetic)"
+   ]
+  },
+  {
+   "cell_type": "markdown",
+   "metadata": {},
+   "source": [
+    "## Prepare Training Data"
+   ]
+  },
+  {
+   "cell_type": "code",
+   "execution_count": 69,
+   "metadata": {},
+   "outputs": [
+    {
+     "name": "stdout",
+     "output_type": "stream",
+     "text": [
+      "(55699,)\n",
+      "(41, 55699)\n"
+     ]
+    }
+   ],
+   "source": [
+    "# genertae training data and its target values\n",
+    "TrainingTarget = np.array(GenerateTrainingTarget(RawTarget,TrainingPercent))\n",
+    "TrainingData   = GenerateTrainingDataMatrix(RawData,TrainingPercent)\n",
+    "print(TrainingTarget.shape)\n",
+    "print(TrainingData.shape)"
+   ]
+  },
+  {
+   "cell_type": "markdown",
+   "metadata": {},
+   "source": [
+    "## Prepare Validation Data"
+   ]
+  },
+  {
+   "cell_type": "code",
+   "execution_count": 70,
+   "metadata": {},
+   "outputs": [
+    {
+     "name": "stdout",
+     "output_type": "stream",
+     "text": [
+      "(6962,)\n",
+      "(41, 6962)\n"
+     ]
+    }
+   ],
+   "source": [
+    "# genertae validation data and its target values\n",
+    "ValDataAct = np.array(GenerateValTargetVector(RawTarget,ValidationPercent, (len(TrainingTarget))))\n",
+    "ValData    = GenerateValData(RawData,ValidationPercent, (len(TrainingTarget)))\n",
+    "print(ValDataAct.shape)\n",
+    "print(ValData.shape)"
+   ]
+  },
+  {
+   "cell_type": "markdown",
+   "metadata": {},
+   "source": [
+    "## Prepare Test Data"
+   ]
+  },
+  {
+   "cell_type": "code",
+   "execution_count": 71,
+   "metadata": {},
+   "outputs": [
+    {
+     "name": "stdout",
+     "output_type": "stream",
+     "text": [
+      "(6962,)\n",
+      "(41, 6962)\n"
+     ]
+    }
+   ],
+   "source": [
+    "# genertae testing data and its target values\n",
+    "TestDataAct = np.array(GenerateValTargetVector(RawTarget,TestPercent, (len(TrainingTarget)+len(ValDataAct))))\n",
+    "TestData = GenerateValData(RawData,TestPercent, (len(TrainingTarget)+len(ValDataAct)))\n",
+    "print(ValDataAct.shape)\n",
+    "print(ValData.shape)"
+   ]
+  },
+  {
+   "cell_type": "markdown",
+   "metadata": {},
+   "source": [
+    "## Closed Form Solution [Finding Weights using Moore- Penrose pseudo- Inverse Matrix]"
+   ]
+  },
+  {
+   "cell_type": "code",
+   "execution_count": 72,
+   "metadata": {},
+   "outputs": [
+    {
+     "name": "stdout",
+     "output_type": "stream",
+     "text": [
+      "(1, 41)\n",
+      "(41, 41)\n",
+      "(55699, 1)\n",
+      "(1,)\n",
+      "(6962, 1)\n",
+      "(6961, 1)\n",
+      "UBITname      = vviswana\n",
+      "Person Number = 50290589\n",
+      "----------------------------------------------------\n",
+      "------------------LeToR Data------------------------\n",
+      "----------------------------------------------------\n",
+      "-------Closed Form with Radial Basis Function-------\n",
+      "----------------------------------------------------\n",
+      "M = 10 \n",
+      "Lambda = 0.9\n",
+      "E_rms Training   = 0.565137868842015\n",
+      "Accuracy Training   = 74.52198423670085\n",
+      "E_rms Validation = 0.5543829496065422\n",
+      "Accuracy Validation = 75.17954610744039\n",
+      "E_rms Testing    = 0.6402356289634681\n",
+      "Accuracy Testing    = 70.23416175836805\n",
+      "(10, 41)\n",
+      "(41, 41)\n",
+      "(55699, 10)\n",
+      "(10,)\n",
+      "(6962, 10)\n",
+      "(6961, 10)\n",
+      "UBITname      = vviswana\n",
+      "Person Number = 50290589\n",
+      "----------------------------------------------------\n",
+      "------------------LeToR Data------------------------\n",
+      "----------------------------------------------------\n",
+      "-------Closed Form with Radial Basis Function-------\n",
+      "----------------------------------------------------\n",
+      "M = 10 \n",
+      "Lambda = 0.9\n",
+      "E_rms Training   = 0.549469406713785\n",
+      "Accuracy Training   = 73.92233253738846\n",
+      "E_rms Validation = 0.5384281741393284\n",
+      "Accuracy Validation = 74.6768170066073\n",
+      "E_rms Testing    = 0.6279788453828589\n",
+      "Accuracy Testing    = 69.87501795719005\n",
+      "(50, 41)\n",
+      "(41, 41)\n",
+      "(55699, 50)\n",
+      "(50,)\n",
+      "(6962, 50)\n",
+      "(6961, 50)\n",
+      "UBITname      = vviswana\n",
+      "Person Number = 50290589\n",
+      "----------------------------------------------------\n",
+      "------------------LeToR Data------------------------\n",
+      "----------------------------------------------------\n",
+      "-------Closed Form with Radial Basis Function-------\n",
+      "----------------------------------------------------\n",
+      "M = 10 \n",
+      "Lambda = 0.9\n",
+      "E_rms Training   = 0.5407355725303156\n",
+      "Accuracy Training   = 73.0138781665739\n",
+      "E_rms Validation = 0.5369459424690324\n",
+      "Accuracy Validation = 73.3409939672508\n",
+      "E_rms Testing    = 0.6197176343077924\n",
+      "Accuracy Testing    = 69.28602212325815\n",
+      "(100, 41)\n",
+      "(41, 41)\n",
+      "(55699, 100)\n",
+      "(100,)\n",
+      "(6962, 100)\n",
+      "(6961, 100)\n",
+      "UBITname      = vviswana\n",
+      "Person Number = 50290589\n",
+      "----------------------------------------------------\n",
+      "------------------LeToR Data------------------------\n",
+      "----------------------------------------------------\n",
+      "-------Closed Form with Radial Basis Function-------\n",
+      "----------------------------------------------------\n",
+      "M = 10 \n",
+      "Lambda = 0.9\n",
+      "E_rms Training   = 0.5386691233395235\n",
+      "Accuracy Training   = 73.11800929998743\n",
+      "E_rms Validation = 0.5356554245906104\n",
+      "Accuracy Validation = 73.51335823039356\n",
+      "E_rms Testing    = 0.6186146523038446\n",
+      "Accuracy Testing    = 68.85504956184457\n",
+      "(2, 41)\n",
+      "(41, 41)\n",
+      "(55699, 2)\n",
+      "(2,)\n",
+      "(6962, 2)\n",
+      "(6961, 2)\n",
+      "UBITname      = vviswana\n",
+      "Person Number = 50290589\n",
+      "----------------------------------------------------\n",
+      "------------------LeToR Data------------------------\n",
+      "----------------------------------------------------\n",
+      "-------Closed Form with Radial Basis Function-------\n",
+      "----------------------------------------------------\n",
+      "M = 10 \n",
+      "Lambda = 0.9\n",
+      "E_rms Training   = 0.5627948139796906\n",
+      "Accuracy Training   = 74.52198423670085\n",
+      "E_rms Validation = 0.5509381914793686\n",
+      "Accuracy Validation = 75.17954610744039\n",
+      "E_rms Testing    = 0.638449311889341\n",
+      "Accuracy Testing    = 70.23416175836805\n"
+     ]
+    },
+    {
+     "data": {
+      "image/png": "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\n",
+      "text/plain": [
+       "<Figure size 432x288 with 1 Axes>"
+      ]
+     },
+     "metadata": {},
+     "output_type": "display_data"
+    }
+   ],
+   "source": [
+    "ErmsArr = []\n",
+    "AccuracyArr = []\n",
+    "for i in M :\n",
+    "    # We are using the K means clustering algorithm to cluster the data.\n",
+    "    # Here we are having 10 radial basis function, which means 10 clusters will be formed.\n",
+    "    kmeans = KMeans(n_clusters=i, random_state=0).fit(np.transpose(TrainingData))\n",
+    "    # We have to select one representative from each cluster.\n",
+    "    # we are choosing the center of each cluster to be the representative.\n",
+    "    # This is also known as the feature points.\n",
+    "    Mu = kmeans.cluster_centers_\n",
+    "\n",
+    "    BigSigma     = GenerateBigSigma(RawData, Mu, TrainingPercent,IsSynthetic)\n",
+    "    TRAINING_PHI = GetPhiMatrix(RawData, Mu, BigSigma, TrainingPercent)\n",
+    "    W            = GetWeightsClosedForm(TRAINING_PHI,TrainingTarget, (C_Lambda)) \n",
+    "    #Before Calculating Validation/Testing error, we need to create validation/Testing Design matrix.\n",
+    "    # We cannot use the same Training Data design matrix.\n",
+    "    TEST_PHI     = GetPhiMatrix(TestData, Mu, BigSigma, 100) \n",
+    "    VAL_PHI      = GetPhiMatrix(ValData, Mu, BigSigma, 100)\n",
+    "    print(Mu.shape)\n",
+    "    print(BigSigma.shape)\n",
+    "    print(TRAINING_PHI.shape)\n",
+    "    print(W.shape)\n",
+    "    print(VAL_PHI.shape)\n",
+    "    print(TEST_PHI.shape)\n",
+    "    \n",
+    "    # used to get the predicted values for trainig, testing and validation datasets\n",
+    "    TR_TEST_OUT  = GetValTest(TRAINING_PHI,W)\n",
+    "    VAL_TEST_OUT = GetValTest(VAL_PHI,W)\n",
+    "    TEST_OUT     = GetValTest(TEST_PHI,W)\n",
+    "\n",
+    "     # used to get the Erms values for trainig, testing and validation datasets\n",
+    "    TrainingAccuracy   = str(GetErms(TR_TEST_OUT,TrainingTarget))\n",
+    "    ValidationAccuracy = str(GetErms(VAL_TEST_OUT,ValDataAct))\n",
+    "    TestAccuracy       = str(GetErms(TEST_OUT,TestDataAct))\n",
+    "\n",
+    "    print ('UBITname      = vviswana')\n",
+    "    print ('Person Number = 50290589')\n",
+    "    print ('----------------------------------------------------')\n",
+    "    print (\"------------------LeToR Data------------------------\")\n",
+    "    print ('----------------------------------------------------')\n",
+    "    print (\"-------Closed Form with Radial Basis Function-------\")\n",
+    "    print ('----------------------------------------------------')\n",
+    "    print (\"M = 10 \\nLambda = 0.9\")\n",
+    "    print (\"E_rms Training   = \" + str(float(TrainingAccuracy.split(',')[1])))\n",
+    "    print (\"Accuracy Training   = \" + str(float(TrainingAccuracy.split(',')[0])))\n",
+    "    print (\"E_rms Validation = \" + str(float(ValidationAccuracy.split(',')[1])))\n",
+    "    print (\"Accuracy Validation = \" + str(float(ValidationAccuracy.split(',')[0])))\n",
+    "    print (\"E_rms Testing    = \" + str(float(TestAccuracy.split(',')[1])))\n",
+    "    print (\"Accuracy Testing    = \" + str(float(TestAccuracy.split(',')[0])))\n",
+    "    ErmsArr.append(float(TestAccuracy.split(',')[1]))\n",
+    "    AccuracyArr.append(float(TestAccuracy.split(',')[0]))\n",
+    "\n",
+    "plt.plot(M, ErmsArr, 'ro')\n",
+    "plt.show()\n",
+    "\n"
+   ]
+  },
+  {
+   "cell_type": "code",
+   "execution_count": 73,
+   "metadata": {},
+   "outputs": [
+    {
+     "data": {
+      "image/png": "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\n",
+      "text/plain": [
+       "<Figure size 432x288 with 1 Axes>"
+      ]
+     },
+     "metadata": {},
+     "output_type": "display_data"
+    }
+   ],
+   "source": [
+    "plt.plot(M,AccuracyArr,'bo')\n",
+    "plt.show()"
+   ]
+  },
+  {
+   "cell_type": "markdown",
+   "metadata": {},
+   "source": [
+    "## Finding Erms on training, validation and test set "
+   ]
+  },
+  {
+   "cell_type": "code",
+   "execution_count": null,
+   "metadata": {},
+   "outputs": [],
+   "source": []
+  },
+  {
+   "cell_type": "code",
+   "execution_count": null,
+   "metadata": {},
+   "outputs": [],
+   "source": []
+  },
+  {
+   "cell_type": "markdown",
+   "metadata": {},
+   "source": [
+    "## Gradient Descent solution for Linear Regression"
+   ]
+  },
+  {
+   "cell_type": "code",
+   "execution_count": 74,
+   "metadata": {},
+   "outputs": [
+    {
+     "name": "stdout",
+     "output_type": "stream",
+     "text": [
+      "----------------------------------------------------\n",
+      "--------------Please Wait for 2 mins!----------------\n",
+      "----------------------------------------------------\n"
+     ]
+    }
+   ],
+   "source": [
+    "print ('----------------------------------------------------')\n",
+    "print ('--------------Please Wait for 2 mins!----------------')\n",
+    "print ('----------------------------------------------------')"
+   ]
+  },
+  {
+   "cell_type": "code",
+   "execution_count": 75,
+   "metadata": {},
+   "outputs": [
+    {
+     "name": "stdout",
+     "output_type": "stream",
+     "text": [
+      "----------Gradient Descent Solution--------------------\n",
+      "M = 10 \n",
+      "Lambda  = 0.0001\n",
+      "eta=0.01\n",
+      "Accuracy Training   = 0.56279\n",
+      "Accuracy Validation = 0.55091\n",
+      "Accuracy Testing    = 0.63548\n"
+     ]
+    }
+   ],
+   "source": [
+    "# The w* obtained from previous method is multiplied with 220 a scalar value\n",
+    "# This is because SGD  first takes a random initial value w(0)\n",
+    "W_Now        = np.dot(1, W)\n",
+    "# La is the lambda which as stated earlier is used as a regularizer in order to prevent overfitting\n",
+    "La           = 2 \n",
+    "learningRate = [0.001,0.01,0.05,0.1,0.15]\n",
+    "# Learning rate in SGD must not be too high as it might never converge or if it is too low it will take lot of time to converge\n",
+    "L_Erms_Val   = []\n",
+    "L_Erms_TR    = []\n",
+    "\n",
+    "L_Erms_final = []\n",
+    "\n",
+    "for j in learningRate : \n",
+    "    L_Erms_Test  = []\n",
+    "    for i in range(0,400):\n",
+    "        \n",
+    "        # Number of data considered in the entire dataset\n",
+    "        # The next 4 steps are based on the formula where we calculate the weights based on previous iteration.\n",
+    "        # They are used to adjust the weights based on previous value.\n",
+    "        #print ('---------Iteration: ' + str(i) + '--------------')\n",
+    "        Delta_E_D     = -np.dot((TrainingTarget[i] - np.dot(np.transpose(W_Now),TRAINING_PHI[i])),TRAINING_PHI[i])\n",
+    "        La_Delta_E_W  = np.dot(La,W_Now)\n",
+    "        Delta_E       = np.add(Delta_E_D,La_Delta_E_W)    \n",
+    "        Delta_W       = -np.dot(j,Delta_E)\n",
+    "        W_T_Next      = W_Now + Delta_W\n",
+    "        W_Now         = W_T_Next # W_Now will be the updated weight now\n",
+    "\n",
+    "        #-----------------TrainingData Accuracy---------------------#\n",
+    "        TR_TEST_OUT   = GetValTest(TRAINING_PHI,W_T_Next) \n",
+    "        Erms_TR       = GetErms(TR_TEST_OUT,TrainingTarget)\n",
+    "        L_Erms_TR.append(float(Erms_TR.split(',')[1]))\n",
+    "\n",
+    "        #-----------------ValidationData Accuracy---------------------#\n",
+    "        VAL_TEST_OUT  = GetValTest(VAL_PHI,W_T_Next) \n",
+    "        Erms_Val      = GetErms(VAL_TEST_OUT,ValDataAct)\n",
+    "        L_Erms_Val.append(float(Erms_Val.split(',')[1]))\n",
+    "\n",
+    "        #-----------------TestingData Accuracy---------------------#\n",
+    "        TEST_OUT      = GetValTest(TEST_PHI,W_T_Next) \n",
+    "        Erms_Test = GetErms(TEST_OUT,TestDataAct)\n",
+    "        L_Erms_Test.append(float(Erms_Test.split(',')[1]))\n",
+    "        \n",
+    "    L_Erms_final.append(min(L_Erms_Test))  \n",
+    "\n",
+    "print ('----------Gradient Descent Solution--------------------')\n",
+    "print (\"M = 10 \\nLambda  = 0.0001\\neta=0.01\")\n",
+    "print (\"Accuracy Training   = \" + str(np.around(min(L_Erms_TR),5)))\n",
+    "print (\"Accuracy Validation = \" + str(np.around(min(L_Erms_Val),5)))\n",
+    "print (\"Accuracy Testing    = \" + str(np.around(min(L_Erms_Test),5)))\n",
+    " \n",
+    "\n"
+   ]
+  },
+  {
+   "cell_type": "code",
+   "execution_count": 76,
+   "metadata": {
+    "scrolled": true
+   },
+   "outputs": [
+    {
+     "data": {
+      "image/png": "iVBORw0KGgoAAAANSUhEUgAAAYQAAAD8CAYAAAB3u9PLAAAABHNCSVQICAgIfAhkiAAAAAlwSFlzAAALEgAACxIB0t1+/AAAADl0RVh0U29mdHdhcmUAbWF0cGxvdGxpYiB2ZXJzaW9uIDIuMi4yLCBodHRwOi8vbWF0cGxvdGxpYi5vcmcvhp/UCwAAFNZJREFUeJzt3X+Q3PV93/HnS1KELTMEXAkmRkhHxtJ0cIc65kKLKR1cD47cTiFTZyj4WuO4RZOo/OFpUQ0lf9gQprEHpnEGTToamiZkjhBIxlhpSETCUNphrFYn4oAlLFsWP3TIMxKypi3RDBLm3T/2o2RZn3yr2z3dnng+ZnZ2v5/ve7/7/t7e3Wu/38/uXaoKSZKWLHQDkqTRYCBIkgADQZLUGAiSJMBAkCQ1BoIkCTAQJEmNgSBJAgwESVKzbKEbOB0rV66ssbGxhW5DkhaVXbt2vV5Vq2arW1SBMDY2xtTU1EK3IUmLSpJX+qnzlJEkCTAQJEmNgSBJAvoMhCQbkuxNsi/JHaeouTHJniS7kzzcs+68JK8leaBrbHmSrUm+k+TbST412K5IkgYx66RykqXAFuA6YBrYmWRbVe3pqlkH3AlcXVVHk1zYs5l7gGd6xu4CDlXV+iRLgPcPsB+SpAH1c4RwJbCvqvZX1XHgEeCGnppbgS1VdRSgqg6dXJHkCuAi4Mme+3wO+I+t/u2qen1uu3CGTE7C2BgsWdK5npxc6I4kaaj6CYSLgQNdy9NtrNt6YH2SZ5PsSLIBoL3yvx/Y3F2c5Px2854kzyV5LMlFc9qDM2FyEjZuhFdegarO9caNhoKks0o/gZAZxnr/7+YyYB1wLXAz8GD7pb8JeKKqDsxQvxp4tqo+AnwDuG/GB082JplKMnX48OE+2p0Hd90Fx469c+zYsc64JJ0l+vlg2jRwSdfyauDgDDU7quoE8FKSvXQC4irgmiSbgHOB5UneoDPfcAz4Wrv/Y8C/munBq2orsBVgfHx8Yf4B9Kuvnt64JC1C/Rwh7ATWJbk0yXLgJmBbT83jwMcAkqykcwppf1VNVNWaqhoDbgceqqo7qqqAP6JzRAHwcWAPo2rNmtMbl6RFaNZAqKq3gNuA7cCLwKNVtTvJ3Umub2XbgSNJ9gBPA5ur6sgsm/4C8MUkzwP/Evh3c92JeXfvvbBixTvHVqzojEvSWSKdF+uLw/j4eC3Y3zKanOzMGbz6aufI4N57YWJiYXqRpNOQZFdVjc9Wt6j+uN2CmpgwACSd1fzTFZIkwECQJDUGgiQJMBAkSY2BIEkCDARJUmMgSJIAA0GS1BgIkiTAQJAkNQaCJAkwECRJjYEgSQIMBElSYyBIkgADQZLUGAiSJMBAkCQ1BoIkCTAQJEmNgSBJAgwESVJjIEiSAANBktQYCJIkwECQJDUGgiQJMBAkSU1fgZBkQ5K9SfYlueMUNTcm2ZNkd5KHe9adl+S1JA/McL9tSb41t/YlScOybLaCJEuBLcB1wDSwM8m2qtrTVbMOuBO4uqqOJrmwZzP3AM/MsO1/BrwxQP+SpCHp5wjhSmBfVe2vquPAI8ANPTW3Aluq6ihAVR06uSLJFcBFwJPdd0hyLvBvgV+de/uSpGHpJxAuBg50LU+3sW7rgfVJnk2yI8kGgCRLgPuBzTNs95627tiPe/AkG5NMJZk6fPhwH+1Kkuain0DIDGPVs7wMWAdcC9wMPJjkfGAT8ERVdQcKST4MfLCqvjbbg1fV1qoar6rxVatW9dGuJGkuZp1DoHNEcEnX8mrg4Aw1O6rqBPBSkr10AuIq4Jokm4BzgeVJ3gBeAa5I8nLr4cIk/72qrh1kZyRJc9dPIOwE1iW5FHgNuAn4dE/N43SODH47yUo6p5D2V9XEyYIknwXGq+rku5R+s42PAf/NMJCkhTXrKaOqegu4DdgOvAg8WlW7k9yd5PpWth04kmQP8DSwuaqOzFfTkqThS1XvdMDoGh8fr6mpqYVuQ5IWlSS7qmp8tjo/qSxJAgwESVJjIEiSAANBktQYCJIkwECQJDUGgiQJMBAkSY2BIEkCDARJUmMgSJIAA0GS1BgIkiTAQJAkNQaCJAkwECRJjYEgSQIMBElSYyBIkgADQZLUGAiSJMBAkCQ1BoIkCTAQJEmNgSBJAgwESVJjIEiSAANBktQYCJIkoM9ASLIhyd4k+5LccYqaG5PsSbI7ycM9685L8lqSB9ryiiR/nOTbrf7XBt8VSdIgls1WkGQpsAW4DpgGdibZVlV7umrWAXcCV1fV0SQX9mzmHuCZnrH7qurpJMuBp5J8sqr+ZJCdkSTNXT9HCFcC+6pqf1UdBx4BbuipuRXYUlVHAarq0MkVSa4ALgKePDlWVceq6ul2+zjwHLB6kB2RJA2mn0C4GDjQtTzdxrqtB9YneTbJjiQbAJIsAe4HNp9q40nOB/4p8NQp1m9MMpVk6vDhw320K0mai34CITOMVc/yMmAdcC1wM/Bg+0W/CXiiqg4wgyTLgN8DfqOq9s9UU1Vbq2q8qsZXrVrVR7uSpLmYdQ6BzhHBJV3Lq4GDM9TsqKoTwEtJ9tIJiKuAa5JsAs4Flid5o6pOTkxvBb5bVb8+yE5IkgbXzxHCTmBdkkvbBPBNwLaemseBjwEkWUnnFNL+qpqoqjVVNQbcDjx0MgyS/Crwk8Dnh7InkqSBzBoIVfUWcBuwHXgReLSqdie5O8n1rWw7cCTJHuBpYHNVHTnVNpOsBu4CLgOeS/LNJP96wH2RJA0gVb3TAaNrfHy8pqamFroNSVpUkuyqqvHZ6vyksiQJMBAkSY2BIEkCDARJUmMgSJIAA0GS1BgIkiTAQJAkNQaCJAkwECRJjYEgSQIMBElSYyBIkgADQZLUGAiSJMBAkCQ1BoIkCTAQJEmNgSBJAgwESVJjIEiSAANBktQYCJIkwECQJDUGgiQJMBAkSY2BIEkCDARJUmMgSJKAPgMhyYYke5PsS3LHKWpuTLInye4kD/esOy/Ja0ke6Bq7IskLbZu/kSSD7YokaRCzBkKSpcAW4JPAZcDNSS7rqVkH3AlcXVUfAj7fs5l7gGd6xn4T2Aisa5cNc9kBSdJw9HOEcCWwr6r2V9Vx4BHghp6aW4EtVXUUoKoOnVyR5ArgIuDJrrGfAs6rqm9UVQEPAT8/0J5IkgbSTyBcDBzoWp5uY93WA+uTPJtkR5INAEmWAPcDm2fY5vQs26RtY2OSqSRThw8f7qNdSdJc9BMIM53br57lZXRO+1wL3Aw8mOR8YBPwRFUd6KnvZ5udwaqtVTVeVeOrVq3qo11J0lws66NmGrika3k1cHCGmh1VdQJ4KcleOgFxFXBNkk3AucDyJG8AX23b+XHblCSdQf0cIewE1iW5NMly4CZgW0/N48DHAJKspHMKaX9VTVTVmqoaA24HHqqqO6rq+8D/S/L327uLPgN8fTi7JEmai1kDoareAm4DtgMvAo9W1e4kdye5vpVtB44k2QM8DWyuqiOzbPqXgQeBfcD3gD+Z4z5IkoYgnTf5LA7j4+M1NTW10G1I0qKSZFdVjc9W5yeVJUmAgSBJagwESRJgIEiSGgNBkgQYCJKkxkCQJAEGgiSpMRAkSYCBIElqDARJEmAgSJIaA0GSBBgIkqTGQJAkAQaCJKkxECRJgIEgSWoMBEkSYCBIkhoDQZIEvBsCYXISxsZgyZLO9eTkQnckSSNp2UI3MK8mJ2HjRjh2rLP8yiudZYCJiYXrS5JG0Nl9hHDXXX8TBicdO9YZlyS9w9kdCK++enrjkvQudnYHwpo1pzcuSe9iZ3cg3HsvrFjxzrEVKzrjkqR3OLsDYWICtm6FtWsh6Vxv3eqEsiTNoK9ASLIhyd4k+5LccYqaG5PsSbI7ycNtbG2SXUm+2cZ/qav+5iQvJHk+yZ8mWTmcXeoxMQEvvwxvv925NgwkaUazvu00yVJgC3AdMA3sTLKtqvZ01awD7gSurqqjSS5sq74PfLSq3kxyLvCtJNuAQ8BXgcuq6vUkXwFuA744xH2TJJ2Gfo4QrgT2VdX+qjoOPALc0FNzK7Clqo4CVNWhdn28qt5sNed0PV7a5X1JApwHHBxoTyRJA+knEC4GDnQtT7exbuuB9UmeTbIjyYaTK5JckuT5to0vV9XBqjoB/DLwAp0guAz4LwPshyRpQP0EQmYYq57lZcA64FrgZuDBJOcDVNWBqroc+CBwS5KLkvwEnUD4GeADwPN0Tjn96IMnG5NMJZk6fPhwH+1Kkuain0CYBi7pWl7Nj57emQa+XlUnquolYC+dgPhrVXUQ2A1cA3y4jX2vqgp4FPjoTA9eVVuraryqxletWtVHu5KkuegnEHYC65JcmmQ5cBOwrafmceBjAO3dQuuB/UlWJ3lvG78AuJpOWLwGXJbk5G/464AXB90ZSdLczfouo6p6K8ltwHZgKfBbVbU7yd3AVFVta+s+kWQP8ENgc1UdSXIdcH+SonPq6b6qegEgyZeA/5HkBPAK8Nl52D9JUp/SOWOzOIyPj9fU1NRCtyFJi0qSXVU1Plvd2f1JZUlS3wwESRJgIEiSGgNBkgQYCJKkxkCQJAEGgiSpMRAkSYCBIElqDARJEmAgSJIaA0GSBBgIkqTGQJAkAQaCJKkxECRJgIEgSWoMBEkSYCBIkhoDQZIEGAiSpMZAkCQBBoIkqTEQJEmAgSBJagwESRJgIEiSGgNBkgQYCJKkpq9ASLIhyd4k+5LccYqaG5PsSbI7ycNtbG2SXUm+2cZ/qat+eZKtSb6T5NtJPjWcXZIkzcWy2QqSLAW2ANcB08DOJNuqak9XzTrgTuDqqjqa5MK26vvAR6vqzSTnAt9q9z0I3AUcqqr1SZYA7x/urkmSTsesgQBcCeyrqv0ASR4BbgD2dNXcCmypqqMAVXWoXR/vqjmHdx6RfA74263ubeD1Oe6DJGkI+jlldDFwoGt5uo11Ww+sT/Jskh1JNpxckeSSJM+3bXy5qg4mOb+tvifJc0keS3LRAPshSRpQP4GQGcaqZ3kZsA64FrgZePDkL/2qOlBVlwMfBG5pv/iXAauBZ6vqI8A3gPtmfPBkY5KpJFOHDx/uo11J0lz0EwjTwCVdy6uBgzPUfL2qTlTVS8BeOgHx19q8wW7gGuAIcAz4Wlv9GPCRmR68qrZW1XhVja9ataqPdiVJc9FPIOwE1iW5NMly4CZgW0/N48DHAJKspHMKaX+S1Une28YvAK4G9lZVAX9E54gC4OO8c05CknSGzTqpXFVvJbkN2A4sBX6rqnYnuRuYqqptbd0nkuwBfghsrqojSa4D7k9SdE493VdVL7RNfwH43SS/DhwGfnHoeydJ6ls6L9YXh/Hx8ZqamlroNiRpUUmyq6rGZ6vzk8qSJMBA0Jk2OQljY7BkSed6cnKhO5LUGAg6cyYnYeNGeOUVqOpcb9xoKIwCg3o0neHnxTkEnTljY50Q6LV2Lbz88pnuRiedDOpjx/5mbMUK2LoVJiYWrq93uyE+L/3OIRgIOnOWLOkcGfRK4O23z3w/6jCoR9MQnxcnlTV61qw5vXGdGa++enrjOjMW4HkxEHTm3Htv55C324oVnXEtHIN6NC3A82Ig6MyZmOic/1y7tnOaaO1az1OPAoN6NC3A82Ig6MyamOic/3z77c61YbDwDOrRtADPi5PKknSWc1JZknRaDARJEmAgSJIaA0GSBBgIkqRmUb3LKMlhYIbPcv9YK4HX56GdYbLHwY16f2CPw2KPp29tVc36P4gXVSDMRZKpft5utZDscXCj3h/Y47DY4/zxlJEkCTAQJEnNuyEQti50A32wx8GNen9gj8Nij/PkrJ9DkCT1591whCBJ6sOiDoQkG5LsTbIvyR0zrD8nye+39f8ryVjXujvb+N4kPzdK/SW5LsmuJC+06380H/0N0mPX+jVJ3khy+yj2mOTyJN9Isrt9Pd8zSj0m+Ykkv9N6ezHJnfPRX589/sMkzyV5K8kv9Ky7Jcl32+WWUesxyYe7nufnk/zzUeqva/15SV5L8sB89DewqlqUF2Ap8D3gp4HlwF8Cl/XUbAL+c7t9E/D77fZlrf4c4NK2naUj1N/PAB9ot/8O8NqofQ271v8h8Bhw+6j1CCwDngf+blv+W8N+nofQ46eBR9rtFcDLwNgC9TgGXA48BPxC1/j7gf3t+oJ2+4IR63E9sK7d/gDwfeD8Uemva/1XgYeBB4b99RvGZTEfIVwJ7Kuq/VV1HHgEuKGn5gbgd9rtPwA+niRt/JGqerOqXgL2te2NRH9V9RdVdbCN7wbek+ScIfc3UI8ASX6ezi+H3fPQ2zB6/ATwfFX9JUBVHamqH45YjwW8L8ky4L3AceD/LkSPVfVyVT0P9P6D658D/qyqflBVR4E/AzaMUo9V9Z2q+m67fRA4BMz6Qawz1R9AkiuAi4Anh9zX0CzmQLgYONC1PN3GZqypqreA/0PnVWI/913I/rp9CviLqnpzyP0N1GOS9wFfAL40D30NpUc6rxoryfZ2GP/vR7DHPwD+is4r2leB+6rqBwvU43zc93QM5XGSXEnnFfz3htTXSXPuL8kS4H5g85B7GqplC93AADLDWO9bpk5V0899BzVIf52VyYeAL9N5pTsfBunxS8B/qqo32gHDfBmkx2XAPwB+FjgGPJXOPwp5argtDtTjlcAP6ZzmuAD4n0n+vKr2D7fFgb7nz8TPy1AeJ8lPAb8L3FJVP/IqfUCD9LcJeKKqDszzz8tAFvMRwjRwSdfyauDgqWraIflPAj/o874L2R9JVgNfAz5TVcN+pTOMHv8e8JUkLwOfB/5DkttGrMdp4Jmqer2qjgFPAB8ZsR4/DfxpVZ2oqkPAs8B8/MmDQb7nz8TPy8CPk+Q84I+BX6mqHUPuDQbr7yrgtvbzch/wmSS/Ntz2hmChJzHmeqHz6m8/nUnhkxM8H+qp+Te8cyLv0Xb7Q7xzUnk/w59UHqS/81v9p0b1a9hT80Xmb1J5kK/jBcBzdCZrlwF/DvyTEevxC8B/pfPq833AHuDyheixq/a3+dFJ5Zfa1/OCdvv9I9bjcuAp4PPz8X04aH896z7LiE4qL3gDAz5B/xj4Dp1zhXe1sbuB69vt99B5B8w+4H8DP91137va/fYCnxyl/oBfoXNe+ZtdlwtHqceebXyReQqEITzP/4LOpPe3gK+MWo/AuW18N50w2LyAPf4snVfBfwUcAXZ33fdzrfd9wC+OWo/teT7R8zPz4VHpr2cbn2VEA8FPKkuSgMU9hyBJGiIDQZIEGAiSpMZAkCQBBoIkqTEQJEmAgSBJagwESRIA/x8QMaHu/ValGwAAAABJRU5ErkJggg==\n",
+      "text/plain": [
+       "<Figure size 432x288 with 1 Axes>"
+      ]
+     },
+     "metadata": {},
+     "output_type": "display_data"
+    }
+   ],
+   "source": [
+    "plt.plot(learningRate, L_Erms_final, 'ro')\n",
+    "plt.show()"
+   ]
+  },
+  {
+   "cell_type": "code",
+   "execution_count": null,
+   "metadata": {},
+   "outputs": [],
+   "source": []
+  }
+ ],
+ "metadata": {
+  "kernelspec": {
+   "display_name": "Python 3",
+   "language": "python",
+   "name": "python3"
+  },
+  "language_info": {
+   "codemirror_mode": {
+    "name": "ipython",
+    "version": 3
+   },
+   "file_extension": ".py",
+   "mimetype": "text/x-python",
+   "name": "python",
+   "nbconvert_exporter": "python",
+   "pygments_lexer": "ipython3",
+   "version": "3.6.5"
+  }
+ },
+ "nbformat": 4,
+ "nbformat_minor": 2
+}
